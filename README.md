@@ -264,7 +264,8 @@ kma-weather-data-pipeline/
 │   └── weather_etl_dag.py
 │
 ├── README.md
-└── .env
+├──.env
+└── KMA_Weather_Data_Engineer_Portfolio.pptx
 ```
 
 > `.env`에는 API Key 및 데이터베이스 접속 정보가 포함되어 있으므로 GitHub에 업로드하지 않습니다.
