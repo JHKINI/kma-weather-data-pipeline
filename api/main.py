@@ -33,6 +33,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 mysql_host = os.getenv("MYSQL_HOST")
+
+if mysql_host == "host.docker.internal":
+    mysql_host = "localhost"
+
 mysql_port = os.getenv("MYSQL_PORT")
 mysql_user = os.getenv("MYSQL_USER")
 mysql_password = os.getenv("MYSQL_PASSWORD")
