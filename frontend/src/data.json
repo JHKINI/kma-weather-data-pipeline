@@ -1,0 +1,9 @@
+{
+  "asOf": "2026-10-15 00:00 KST",
+  "source": {
+    "name": "기상청 API허브 · 종관기상관측(ASOS)",
+    "url": "https://apihub.kma.go.kr/apiList.do?apiSeq=2"
+  },
+  "status": "기존 기상 API 서버의 실제 응답값을 화면에서 조회합니다.",
+  "items": []
+}

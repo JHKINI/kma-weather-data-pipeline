@@ -1,0 +1,67 @@
+
+/* KMA-inspired Calm Blue */
+
+:root:root,
+:root:root[data-theme="dark"] {
+  color-scheme: light;
+
+  --color-bg: #EDF4FA;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #DCE8F4;
+
+  --color-border: #D0DDEB;
+  --color-border-strong: #B4C8DD;
+
+  --color-text: #24364B;
+  --color-text-2: #465C73;
+  --color-muted: #6F8298;
+
+  --color-primary: #477FB5;
+  --color-primary-fg: #FFFFFF;
+  --color-primary-strong: #356B9F;
+  --color-primary-weak: #DCEAF7;
+
+  --color-accent: #5C91C2;
+  --color-accent-fg: #FFFFFF;
+
+  --color-success: #39866B;
+  --color-warning: #B9842D;
+  --color-danger: #C45D63;
+  --color-info: #477FB5;
+
+  --chart-1: #477FB5;
+  --chart-2: #69A7C8;
+  --chart-3: #7E91BB;
+  --chart-4: #5A9B82;
+  --chart-5: #C6A05B;
+
+  --focus-ring: #477FB5;
+
+  --shadow-sm: 0 1px 3px rgba(36, 54, 75, 0.08);
+  --shadow-md: 0 8px 24px rgba(36, 54, 75, 0.10);
+
+  --glass-bg: #FFFFFF;
+  --glass-border: #D0DDEB;
+  --grid-line: rgba(71, 127, 181, 0.12);
+
+  --neon-glow: none;
+}
+
+.notice-card-button {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.notice-card-button:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-strong);
+}
+
+.notice-card-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
