@@ -1,81 +1,139 @@
 # KMA Weather Data Pipeline
 
-기상청 ASOS API를 활용한 기상 데이터 수집·품질검증·MySQL 적재 및 ETL 자동화 프로젝트
-
-> 현재 개발 진행 중인 프로젝트입니다.
-
----
-
-## 📌 프로젝트 소개
-
-기상청 API Hub에서 서울 지역의 시간별 기상 데이터를 수집하고,
-Python을 이용해 데이터를 전처리 및 검증한 후 MySQL에 적재하는
-데이터 파이프라인을 구축하고 있습니다.
-
-현재 Python 기반 ETL, Data Quality Check, MySQL 적재,
-Airflow를 활용한 ETL 자동화, Docker 기반 Airflow 환경 구성,
-FastAPI 기반 데이터 조회 API까지 구현했습니다.
-
-이후 Dashboard를 추가하여 데이터 수집부터 저장, API 제공 및
-시각화까지 연결되는 데이터 엔지니어링 프로젝트로 확장할 예정입니다.
+기상청 ASOS API에서 전국 관측소의 시간별 기상 데이터를 수집하고, 품질검증을 거쳐 MySQL에 적재한 뒤,
+FastAPI와 React 대시보드로 조회하는 데이터 엔지니어링 프로젝트입니다.
+수집·검증·적재는 Apache Airflow DAG로 매일 자동 실행됩니다.
 
 ---
 
-## 🎯 프로젝트 목표
+## 📌 한눈에 보기
 
-- 외부 API를 활용한 데이터 수집
-- Python 기반 ETL 구현
-- 데이터 품질검증(Data Quality) 구현
-- MySQL 데이터베이스 적재
-- Airflow를 활용한 ETL 자동화
-- Docker Compose 기반 Airflow 실행 환경 구성
-- FastAPI를 활용한 데이터 조회 API 구현
-- Dashboard를 통한 데이터 시각화
-- 전체 서비스의 실행 환경 및 운영 구조 개선
+- **수집**: 기상청 API Hub ASOS 시간자료를 하루 단위로 수집 (`stn=0`, 전체 관측소 한 번에 요청)
+- **검증**: 필수 오류는 파이프라인 중단, 측정값 결측·시간 간격 이상은 경고로 기록하고 통과
+- **적재**: MySQL `weather_observation`에 UPSERT (기존 유효값은 보존, NULL만 보완)
+- **자동화**: Airflow DAG `weather_etl` — 매일 01:00(Asia/Seoul) 실행
+- **조회**: FastAPI (`/api/weather`, `/api/quality`, `/api/pipeline/runs`) + React/TypeScript 대시보드
 
 ---
 
 ## 🏗️ 데이터 파이프라인 구조
 
 ```text
-기상청 KMA ASOS API
+기상청 KMA ASOS API (kma_sfctm3.php)
         ↓
-Python 데이터 수집
+collect_weather      수집 (실패 시 최대 3회 재시도) → 전처리(transform) → CSV 저장
         ↓
-데이터 전처리
+quality_check        품질검증 (중단 조건 / 경고 조건 구분)
         ↓
-Data Quality Check
- ├─ 결측값 검사
- ├─ 중복 데이터 검사
- ├─ 시간 순서 검사
- ├─ 1시간 간격 검사
- └─ 값의 허용 범위 검사
+load_mysql           MySQL weather_observation UPSERT
         ↓
-CSV 저장
+FastAPI              /api/weather · /api/quality · /api/pipeline/runs
         ↓
-MySQL 적재
-        ↓
-FastAPI
-        ↓
-데이터 조회 API
-        ↓
-Dashboard (예정)
+React Dashboard      Dashboard · Weather · Quality · Pipeline 페이지
 ```
 
-### 자동화 환경
+### Airflow DAG (`dags/weather_etl_dag.py`)
 
 ```text
-Docker
-   ↓
-Docker Compose
-   ↓
-Apache Airflow
-   ↓
-ETL DAG
-   ├─ collect_weather
-   ├─ quality_check
-   └─ load_mysql
+dag_id   : weather_etl
+schedule : 0 1 * * *  (매일 01:00, Asia/Seoul)
+catchup  : False
+
+collect_weather  >>  quality_check  >>  load_mysql
 ```
+
+각 태스크는 `BashOperator`로 `02_collect_weather.py`의 함수를 불러 실행합니다.
+
+- `collect_weather`: 전날 하루치 수집 → 전처리 → `weather_data.csv` 저장
+- `quality_check`: CSV를 읽어 `quality_check_weather()` 실행
+- `load_mysql`: CSV를 읽어 `load_to_mysql()` 실행
+
+과거 기간이 필요하면 `backfill_weather(start_date, end_date)`로 날짜 범위를 채울 수 있습니다.
+
+---
+
+## 🔍 Data Quality Check
+
+DAG의 `quality_check`는 아래 기준으로 **중단(실패)** 과 **경고 후 통과**를 구분합니다.
+측정값 결측은 실제 관측 장비 특성상 발생할 수 있어, 전체 적재를 막지 않고 경고로 남깁니다.
+대시보드의 품질 리포트(`/api/quality`)도 같은 기준으로, 측정값 결측만으로는 FAIL 처리하지 않습니다.
+
+| 검사 | 항목 | 결과 |
+|---|---|---|
+| 데이터 건수 | 데이터가 0건 | ❌ 중단 |
+| 필수 컬럼 | TM, STN, WD, WS, PA, PS, TA, TD, HM 중 누락 | ❌ 중단 |
+| 키 결측 | TM 또는 STN 결측 | ❌ 중단 |
+| 중복 | `TM + STN` 중복 | ❌ 중단 |
+| 값 범위 | WD 0~360, WS ≥ 0, HM 0~100, TA -50~60℃ 벗어남 | ❌ 중단 |
+| 측정값 결측 | WD, WS, PA, PS, TA, TD, HM의 NaN | ⚠️ 경고 후 통과 |
+| 시간 순서 | 지점별 시간 정렬 이상 | ⚠️ 경고 기록 |
+| 시간 간격 | 지점별 1시간 간격 불연속 | ⚠️ 경고 기록 |
+
+실행 로그 예시:
+
+```text
+===== DATA QUALITY CHECK =====
+전체 데이터: 24건
+전체 결측값: 0건
+중복 데이터: 0건
+시간 순서 오류: False
+1시간 간격 오류: False
+범위 오류: {}
+품질검증 결과: PASS
+```
+
+---
+
+## 🗄️ MySQL 적재 (UPSERT)
+
+`weather_observation` 테이블에 `INSERT ... ON DUPLICATE KEY UPDATE`로 적재합니다.
+같은 `TM + STN` 데이터가 다시 들어오면 **기존에 값이 있는 컬럼은 유지하고, NULL이던 컬럼만 새 값으로 채웁니다.**
+
+```sql
+INSERT INTO weather_observation (tm, stn, wd, ws, pa, ps, ta, td, hm)
+VALUES (:tm, :stn, :wd, :ws, :pa, :ps, :ta, :td, :hm) AS new
+ON DUPLICATE KEY UPDATE
+    wd = COALESCE(weather_observation.wd, new.wd),
+    ...
+    hm = COALESCE(weather_observation.hm, new.hm)
+```
+
+재실행하거나 backfill을 다시 돌려도 중복 행이 생기지 않고(멱등), 이전에 결측이던 값이 나중 수집에서 채워질 수 있습니다.
+
+---
+
+## 🌐 FastAPI (`api/main.py`)
+
+| Endpoint | 설명 |
+|---|---|
+| `GET /` | 서버 동작 확인 |
+| `GET /api/test-db` | MySQL 연결 확인 |
+| `GET /api/weather` | 관측소(`stn`, 필수)·날짜(`date`) 또는 기간(`start`, `end`)으로 기상 데이터 조회 |
+| `GET /api/quality` | 날짜(`date`, 필수)별 품질검증 결과 |
+| `GET /api/pipeline/runs` | Airflow REST API로 `weather_etl` 최근 5회 실행 상태 조회 |
+
+- 관측소 번호는 코드에 내장된 공식 관측소 목록(`OFFICIAL_STATIONS`)으로 검증합니다.
+- `/api/pipeline/runs`는 Airflow 토큰을 캐시(약 50분)하고, 401이면 토큰을 갱신해 한 번 재시도합니다.
+
+---
+
+## 🖥️ Dashboard (`frontend/`)
+
+React + TypeScript(Vite)로 만든 대시보드입니다. FastAPI에서 데이터를 받아 보여줍니다.
+
+- **Dashboard**: 전체 요약
+- **Weather**: 관측소·날짜별 기상 데이터 조회
+- **Quality**: 날짜별 품질검증 결과
+- **Pipeline**: Airflow DAG 최근 실행 상태
+
+---
+
+## 🐳 Docker
+
+- `docker-compose.yaml`: Airflow(apiserver, scheduler, dag-processor, worker, triggerer) + PostgreSQL + Redis 실행 환경
+- `Dockerfile`: ETL 스크립트(`02_collect_weather.py`)를 단독 실행하는 이미지
+
+> MySQL, FastAPI, React 대시보드는 아직 Docker Compose에 포함되어 있지 않고 로컬에서 따로 실행합니다. (아래 "알려진 한계" 참고)
 
 ---
 
@@ -83,28 +141,19 @@ ETL DAG
 
 | 분야 | 기술 |
 |---|---|
-| Language | Python |
+| Language | Python, TypeScript |
 | Data Processing | Pandas |
-| API | KMA API Hub |
-| Database | MySQL |
+| Data Source | 기상청 API Hub (ASOS 시간자료) |
+| Database | MySQL (적재), PostgreSQL·Redis (Airflow 메타데이터/브로커) |
 | DB Connection | SQLAlchemy, PyMySQL |
-| Environment | Anaconda |
-| Workflow | Apache Airflow |
+| Workflow | Apache Airflow 3.x |
 | Container | Docker, Docker Compose |
-| Backend API | FastAPI |
-| Dashboard | 예정 |
+| Backend API | FastAPI, Uvicorn |
+| Frontend | React, TypeScript, Vite |
 
 ---
 
 ## 📊 데이터
-
-### 데이터 출처
-
-기상청 API Hub의 ASOS 시간별 관측 데이터를 활용합니다.
-
-- 관측 지점: 서울(108)
-- 데이터 주기: 1시간
-- 현재 수집 단위: 하루 단위
 
 ### 주요 컬럼
 
@@ -120,207 +169,16 @@ ETL DAG
 | TD | 이슬점온도 |
 | HM | 상대습도 |
 
----
-
-## 🔍 Data Quality Check
-
-수집된 데이터를 MySQL에 적재하기 전에 기본적인 데이터 품질검증을 수행합니다.
-
-### 1. 결측값 검사
-
-데이터 내 결측값의 개수를 확인합니다.
-
-```text
-결측값: 0건
-```
-
-### 2. 중복 데이터 검사
-
-`TM + STN`을 기준으로 중복 데이터를 검사합니다.
-
-```text
-중복 데이터: 0건
-```
-
-### 3. 시간 순서 검사
-
-관측 시간이 올바른 순서로 정렬되어 있는지 확인합니다.
-
-```text
-시간 순서 오류: False
-```
-
-### 4. 시간 간격 검사
-
-시간별 데이터가 1시간 간격으로 연속되는지 검사합니다.
-
-```text
-1시간 간격 오류: False
-```
-
-### 5. 값의 허용 범위 검사
-
-주요 기상 데이터의 비정상적인 값을 확인합니다.
-
-```text
-WD : 0 ~ 360
-WS : 0 이상
-HM : 0 ~ 100
-TA : -50 ~ 60℃
-```
-
-### 현재 검증 결과
-
-```text
-===== DATA QUALITY CHECK =====
-전체 데이터: 24건
-결측값: 0건
-중복 데이터: 0건
-시간 순서 오류: False
-1시간 간격 오류: False
-범위 오류: {}
-품질검증 결과: PASS
-```
+- 데이터 주기: 1시간
+- 수집 단위: 하루 (전체 관측소 한 번에 요청)
 
 ---
 
-## 🗄️ MySQL 적재
+## ⚠️ 알려진 한계 / 개선 예정
 
-MySQL의 `weather_observation` 테이블에 데이터를 적재합니다.
-
-동일한 `TM + STN` 데이터가 다시 들어오는 경우
-중복 적재를 방지하도록 구성했습니다.
-
-```text
-KMA API
-   ↓
-Python ETL
-   ↓
-Data Quality Check
-   ↓
-MySQL
-```
-
----
-
-## ⚙️ Airflow ETL 자동화
-
-Apache Airflow를 Docker Compose 환경에서 구성하여
-ETL 파이프라인을 자동화했습니다.
-
-### DAG 구조
-
-```text
-collect_weather
-       ↓
-quality_check
-       ↓
-load_mysql
-```
-
-Airflow를 통해 기상 데이터를 수집하고,
-품질검증 후 MySQL에 적재하는 과정을 자동화하도록 구성했습니다.
-
----
-
-## 🐳 Docker
-
-Docker Compose를 활용하여 Airflow 실행 환경을 구성했습니다.
-
-Docker 환경에서 Airflow의 주요 구성 요소를 실행하고,
-Weather 프로젝트의 코드를 Airflow 환경과 연결하여
-ETL DAG를 실행할 수 있도록 구성했습니다.
-
-현재는 Airflow 실행 환경을 Docker로 구성한 상태이며,
-향후 MySQL, FastAPI 등을 포함한 전체 서비스의
-Docker Compose 통합 환경으로 확장할 예정입니다.
-
----
-
-## 🌐 FastAPI
-
-MySQL에 적재된 기상 데이터를 REST API 형태로 조회할 수 있도록
-FastAPI를 구현했습니다.
-
-### 구현 기능
-
-- FastAPI 서버 실행
-- MySQL 연결
-- `weather_observation` 테이블 조회
-- 최근 기상 데이터 24건 JSON 반환
-
-### API
-
-```text
-GET /api/weather
-```
-
-실행 예시:
-
-```text
-http://127.0.0.1:8001/api/weather
-```
-
-FastAPI를 통해 MySQL에 저장된 실제 기상 데이터를
-JSON 형태로 제공하도록 구성했습니다.
-
----
-
-## 🖥️ 실행 화면
-
-### 1. Python ETL 및 Data Quality Check
-
-![Python ETL 실행 결과](images/etl-result.png)
-
-### 2. Airflow ETL 실행
-
-![Airflow DAG](images/airflow-dag.png)
-
-### 3. MySQL 데이터 적재 결과
-
-![MySQL 데이터](images/mysql-data.png)
-
-### 4. FastAPI 데이터 조회
-
-![FastAPI API 조회 결과](images/fastapi-weather.png)
-
-> `images/` 폴더에 실제 이미지 파일을 업로드하면 GitHub README에서 화면이 표시됩니다.
-
----
-
-## 📈 개발 진행 상황
-
-- [x] KMA API 연동
-- [x] 기상 데이터 수집
-- [x] 데이터 전처리
-- [x] 결측값 검사
-- [x] 중복 데이터 검사
-- [x] 시간 순서 검사
-- [x] 1시간 간격 검사
-- [x] 값 범위 검사
-- [x] MySQL 적재
-- [x] Airflow 환경 구성
-- [x] Docker Compose 기반 Airflow 환경 구성
-- [x] Airflow ETL DAG 구성
-- [x] FastAPI 데이터 조회 API
-- [ ] Dashboard 구축
-- [ ] MySQL + FastAPI + Airflow 전체 Docker Compose 통합
-- [ ] 프로젝트 문서화 및 운영 구조 개선
-
----
-
-## 💡 프로젝트를 통해 학습한 내용
-
-- 외부 API 데이터 수집 및 처리
-- ETL 파이프라인 구성
-- 데이터 품질검증의 필요성
-- 관계형 데이터베이스 적재
-- 중복 데이터 처리
-- 시계열 데이터의 연속성 검증
-- Airflow DAG 구성
-- Docker Compose 기반 실행 환경 구성
-- FastAPI를 활용한 데이터 제공
-- 데이터 파이프라인과 API의 연결
+- 수집 이력(성공/실패, 건수)을 따로 저장하는 테이블이 없어, 실행 상태는 Airflow API로만 확인합니다.
+- MySQL·FastAPI·React는 Docker Compose에 통합되어 있지 않습니다.
+- 환경 구성 가이드(`weather_pipeline_startup_guide.md`)는 로컬 개발 환경 기준이라 경로·설정을 본인 환경에 맞게 수정해야 합니다.
 
 ---
 
@@ -329,31 +187,34 @@ JSON 형태로 제공하도록 구성했습니다.
 ```text
 kma-weather-data-pipeline/
 ├── api/
-│   └── main.py
-│
+│   └── main.py                     # FastAPI
 ├── dags/
-│   └── weather_etl_dag.py
-│
-├── images/
-│   ├── etl-result.png
-│   ├── airflow-dag.png
-│   ├── mysql-data.png
-│   └── fastapi-weather.png
-│
-├── 01_api_test.py
-├── 02_collect_weather.py
-├── README.md
-├── .gitignore
-└── .env
+│   └── weather_etl_dag.py          # Airflow DAG
+├── frontend/                       # React + TypeScript 대시보드
+│   └── src/components/             # Dashboard, Weather, Quality, Pipeline ...
+├── images/                         # README 스크린샷
+├── 01_api_test.py                  # API 호출 테스트
+├── 02_collect_weather.py           # 수집·전처리·품질검증·CSV·MySQL 적재
+├── docker-compose.yaml             # Airflow 실행 환경
+├── Dockerfile                      # ETL 단독 실행 이미지
+├── requirements.txt
+├── weather_pipeline_startup_guide.md
+└── README.md
 ```
 
-> `.env`에는 API Key 및 데이터베이스 접속 정보가 포함되어 있으므로 GitHub에 업로드하지 않습니다.
+---
+
+## 🖼️ 실행 화면
+
+![Python ETL 실행 결과](images/etl-result.png)
+![Airflow DAG](images/airflow-dag.png)
+![MySQL 데이터](images/mysql-data.png)
 
 ---
 
 ## 🔐 환경변수
 
-프로젝트 실행을 위해 `.env` 파일에 API 및 MySQL 접속 정보를 설정합니다.
+`.env`에 API 및 MySQL 접속 정보를 설정합니다. (GitHub에 올리지 않습니다.)
 
 ```text
 KMA_AUTH_KEY=YOUR_API_KEY
@@ -365,4 +226,12 @@ MYSQL_PASSWORD=YOUR_PASSWORD
 MYSQL_DATABASE=weather_db
 ```
 
-> 실제 API Key와 비밀번호는 GitHub에 공개하지 않습니다.
+---
+
+## 💡 프로젝트를 통해 배운 점
+
+- 외부 API 수집과 재시도 처리
+- "중단할 오류"와 "경고로 남길 이상"을 구분하는 품질검증 정책 설계
+- COALESCE 기반 UPSERT로 재실행해도 안전한(멱등) 적재
+- Airflow DAG 구성과 Docker Compose 실행 환경
+- 파이프라인 → API → 대시보드까지 이어지는 데이터 흐름 구성

@@ -324,8 +324,7 @@ def get_quality_report(df):
         range_errors["TA"] = "-50~60℃ 범위 초과"
 
     passed = (
-        missing_count == 0
-        and duplicate_count == 0
+        duplicate_count == 0
         and not time_order_error
         and not range_errors
     )
